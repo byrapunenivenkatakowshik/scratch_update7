@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React DOM Error Test</title>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script>
+        // Test script to identify React DOM issues
+        console.log('=== React DOM Error Test ===');
+        
+        // Check if we can access the root element
+        const root = document.getElementById('root');
+        console.log('Root element:', root);
+        
+        // Check for React in global scope
+        console.log('React available:', typeof React !== 'undefined');
+        console.log('ReactDOM available:', typeof ReactDOM !== 'undefined');
+        
+        // Monitor for errors
+        window.addEventListener('error', (event) => {
+            console.error('Global error:', event.error);
+            console.error('Error source:', event.filename, event.lineno, event.colno);
+        });
+        
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Unhandled promise rejection:', event.reason);
+        });
+        
+        // Test basic React functionality
+        if (typeof React !== 'undefined') {
+            console.log('React version:', React.version);
+            
+            // Test basic component creation
+            try {
+                const TestComponent = React.createElement('div', null, 'Test');
+                console.log('✅ Basic React component creation works');
+            } catch (error) {
+                console.error('❌ Basic React component creation failed:', error);
+            }
+        }
+        
+        // Instructions for manual testing
+        console.log('\n📋 Manual Testing Instructions:');
+        console.log('1. Open your React app in another tab');
+        console.log('2. Open dev tools and check console');
+        console.log('3. Look for error messages when clicking on documents');
+        console.log('4. Check Network tab for failed requests');
+        console.log('5. Try the error boundary recovery options');
+        
+        // Export test functions
+        window.testReactDOM = {
+            checkRoot: () => {
+                const root = document.getElementById('root');
+                console.log('Root element exists:', !!root);
+                console.log('Root innerHTML length:', root ? root.innerHTML.length : 0);
+                return !!root;
+            },
+            
+            checkReact: () => {
+                console.log('React available:', typeof React !== 'undefined');
+                console.log('ReactDOM available:', typeof ReactDOM !== 'undefined');
+                return typeof React !== 'undefined' && typeof ReactDOM !== 'undefined';
+            },
+            
+            simulateError: () => {
+                console.log('🧪 Simulating React error...');
+                throw new Error('Test React error for debugging');
+            }
+        };
+        
+        console.log('🔧 Test functions available at window.testReactDOM');
+    </script>
+</body>
+</html>

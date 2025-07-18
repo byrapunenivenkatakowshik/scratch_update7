@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Filter Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin-bottom: 30px; border: 1px solid #ddd; padding: 20px; }
+        .result { margin: 10px 0; padding: 10px; background: #f5f5f5; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <h1>Document Filter Test</h1>
+    
+    <div class="test-section">
+        <h2>Test Auth</h2>
+        <button onclick="testAuth()">Test Login</button>
+        <div id="auth-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test Document Fetch</h2>
+        <button onclick="testDocuments()">Fetch Documents</button>
+        <div id="docs-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test Public Documents</h2>
+        <button onclick="testPublicDocuments()">Fetch Public Documents</button>
+        <div id="public-docs-result" class="result"></div>
+    </div>
+
+    <script>
+        let authToken = '';
+        
+        async function testAuth() {
+            const result = document.getElementById('auth-result');
+            try {
+                const response = await fetch('http://localhost:5000/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'test@example.com',
+                        password: 'password123'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    authToken = data.token;
+                    result.innerHTML = `<div class="success">Login successful! User: ${JSON.stringify(data.user)}</div>`;
+                } else {
+                    const error = await response.json();
+                    result.innerHTML = `<div class="error">Login failed: ${error.error}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            }
+        }
+        
+        async function testDocuments() {
+            const result = document.getElementById('docs-result');
+            if (!authToken) {
+                result.innerHTML = '<div class="error">Please login first</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:5000/api/documents', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    result.innerHTML = `<div class="success">Documents: ${JSON.stringify(data.documents, null, 2)}</div>`;
+                } else {
+                    const error = await response.json();
+                    result.innerHTML = `<div class="error">Error: ${error.error}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            }
+        }
+        
+        async function testPublicDocuments() {
+            const result = document.getElementById('public-docs-result');
+            if (!authToken) {
+                result.innerHTML = '<div class="error">Please login first</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:5000/api/documents/public', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    result.innerHTML = `<div class="success">Public Documents: ${JSON.stringify(data.documents, null, 2)}</div>`;
+                } else {
+                    const error = await response.json();
+                    result.innerHTML = `<div class="error">Error: ${error.error}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

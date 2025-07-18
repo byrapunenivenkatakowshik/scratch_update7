@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backend Connection Test</title>
+</head>
+<body>
+    <h1>Backend Connection Test</h1>
+    <div id="results"></div>
+    
+    <script>
+        async function testBackend() {
+            const results = document.getElementById('results');
+            
+            try {
+                // Test health endpoint
+                const healthResponse = await fetch('http://localhost:5000/health');
+                const healthData = await healthResponse.json();
+                results.innerHTML += `<p>✅ Health: ${JSON.stringify(healthData)}</p>`;
+                
+                // Test login endpoint
+                const loginResponse = await fetch('http://localhost:5000/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        email: 'test@example.com',
+                        password: 'password123'
+                    })
+                });
+                
+                if (loginResponse.ok) {
+                    const loginData = await loginResponse.json();
+                    results.innerHTML += `<p>✅ Login: ${loginData.user.name}</p>`;
+                } else {
+                    results.innerHTML += `<p>❌ Login failed: ${loginResponse.status}</p>`;
+                }
+                
+            } catch (error) {
+                results.innerHTML += `<p>❌ Error: ${error.message}</p>`;
+            }
+        }
+        
+        testBackend();
+    </script>
+</body>
+</html>
