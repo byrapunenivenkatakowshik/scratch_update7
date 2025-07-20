@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "bun --watch server.js",
+    "dev": "nodemon server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -16,7 +16,7 @@
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
-    "express": "^5.1.0",
+    "express": "^4.18.2",
     "firebase-admin": "^13.4.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
@@ -24,11 +24,7 @@
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
-    "@types/bun": "latest",
     "nodemon": "^3.1.10"
   },
-  "private": true,
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+  "private": true
 }

@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { documentService, commentService } from '../services/api';
+import { documentService } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import Editor from '../components/Editor';
-import BlockEditor from '../components/BlockEditor';
 import ShareModal from '../components/ShareModal';
-import CommentPanel from '../components/CommentPanel';
-import InlineComment from '../components/InlineComment';
-import SuggestionHighlight from '../components/SuggestionHighlight';
+import CommentSidebar from '../components/CommentSidebar';
+import SuggestionSidebar from '../components/SuggestionSidebar';
 import useSocket from '../hooks/useSocket';
 import useWebRTC from '../hooks/useWebRTC';
 import '../styles/Editor.css';
@@ -30,12 +28,9 @@ const EditorPage = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [webrtcEnabled, setWebrtcEnabled] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [comments, setComments] = useState([]);
-  const [showCommentSidebar, setShowCommentSidebar] = useState(true);
-  const [selectedTextForComment, setSelectedTextForComment] = useState('');
-  const [selectedRange, setSelectedRange] = useState(null);
-  const [commentType, setCommentType] = useState('comment');
-  const [selectionType, setSelectionType] = useState('text');
+  const [showComments, setShowComments] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const titleRef = useRef(null);
@@ -59,7 +54,12 @@ const EditorPage = () => {
     onUserLeft,
     onActiveUsers,
     onActiveUsersUpdated,
-    onError
+    onError,
+    // Suggestion functions (with fallbacks)
+    sendSuggestionAdded = () => {},
+    sendSuggestionResolved = () => {},
+    onSuggestionAdded = () => {},
+    onSuggestionResolved = () => {}
   } = useSocket();
 
   const handleCursorUpdate = useCallback((peerId, cursorData) => {
@@ -115,6 +115,7 @@ const EditorPage = () => {
 
     // Set up socket event listeners
     onContentUpdated((data) => {
+      
       if (!contentUpdateRef.current) {
         setContent(data.content);
       }
@@ -148,6 +149,7 @@ const EditorPage = () => {
     });
 
     onMouseUpdated((data) => {
+      console.log('Mouse position updated received:', data);
       setActiveUsers(prevUsers => {
         const updatedUsers = prevUsers.map(user => {
           if (user.userId === data.userId) {
@@ -164,6 +166,7 @@ const EditorPage = () => {
           });
         }
         
+        console.log('Updated activeUsers with mouse position:', updatedUsers);
         return updatedUsers;
       });
     });
@@ -188,6 +191,56 @@ const EditorPage = () => {
       console.error('Socket error:', error);
     });
   };
+
+  // Socket listeners for suggestions (using useSocket hooks)
+  useEffect(() => {
+    if (!socket || !onSuggestionAdded || !onSuggestionResolved) return;
+
+    const handleSuggestionAdded = (data) => {
+      console.log('=== SUGGESTION RECEIVED ===');
+      console.log('Data:', data);
+      
+      if (data.suggestion && data.suggestion.documentId === id) {
+        console.log('Adding suggestion to list');
+        setSuggestions(prev => {
+          // Check if suggestion already exists to prevent duplicates
+          const exists = prev.find(s => s.id === data.suggestion.id);
+          if (exists) {
+            console.log('Suggestion already exists, skipping');
+            return prev;
+          }
+          return [data.suggestion, ...prev];
+        });
+        
+        // Auto-open suggestions sidebar for document owner
+        if (user?.userId === document?.createdBy && !showSuggestions) {
+          console.log('Auto-opening suggestions sidebar for document owner');
+          setShowSuggestions(true);
+        }
+      }
+    };
+
+    const handleSuggestionResolved = (data) => {
+      console.log('Suggestion resolved:', data);
+      if (data.documentId === id) {
+        setSuggestions(prev => prev.map(suggestion => 
+          suggestion.id === data.suggestionId 
+            ? { ...suggestion, status: data.action === 'accepted' ? 'approved' : 'rejected' }
+            : suggestion
+        ));
+      }
+    };
+
+    onSuggestionAdded(handleSuggestionAdded);
+    onSuggestionResolved(handleSuggestionResolved);
+
+    // Cleanup function to remove listeners
+    return () => {
+      // Note: We can't remove individual listeners with the current useSocket implementation
+      // This is handled by the useSocket hook itself
+    };
+  }, [socket, id, user?.userId, document?.createdBy, showSuggestions]);
+
 
   useEffect(() => {
     const updateCounts = () => {
@@ -216,8 +269,6 @@ const EditorPage = () => {
         }, 1000);
       }
       
-      // Load comments
-      loadComments();
     } catch (err) {
       console.error('Error fetching document:', err);
       setError(err.response?.data?.error || 'Failed to fetch document');
@@ -226,16 +277,6 @@ const EditorPage = () => {
     }
   };
 
-  const loadComments = async () => {
-    try {
-      console.log('Loading comments for document:', id);
-      const { comments } = await commentService.getComments(id);
-      console.log('Loaded comments:', comments);
-      setComments(comments || []);
-    } catch (err) {
-      console.error('Error loading comments:', err);
-    }
-  };
 
   const saveDocument = async () => {
     if (!document) return;
@@ -268,13 +309,6 @@ const EditorPage = () => {
 
 
 
-  const toggleCommentSidebar = () => {
-    setShowCommentSidebar(!showCommentSidebar);
-  };
-
-  const expandComment = (commentId) => {
-    setExpandedComment(expandedComment === commentId ? null : commentId);
-  };
 
   const handleTitleKeyPress = (e) => {
     if (e.key === 'Enter') {
@@ -388,122 +422,79 @@ const EditorPage = () => {
   // Create throttled mouse move handler
   useEffect(() => {
     const throttledMouseMove = throttle((position) => {
-      if (user?.userId && isConnected) {
+      console.log('EditorPage mouse move:', { position, userId: user?.userId, isConnected, hasHandler: !!sendMousePosition });
+      if (user?.userId && isConnected && socket?.connected) {
         // Send mouse position update via Socket.IO
         sendMousePosition(id, position, user.userId);
+        console.log('Mouse position sent:', { id, position, userId: user.userId, socketConnected: socket?.connected });
       }
-    }, 50); // Throttle to 50ms for smoother mouse tracking
+    }, 16); // Throttle to 16ms for ~60fps smoother mouse tracking
     
     handleMouseMove.current = throttledMouseMove;
-  }, [user?.userId, isConnected, sendMousePosition, id]);
+  }, [user?.userId, isConnected, sendMousePosition, id, socket?.connected]);
 
 
   const handleSave = () => {
     saveDocument();
   };
 
-  const handleCommentAdd = async (commentData) => {
-    console.log('Adding comment to state:', commentData);
+  // Handle suggestions
+  const handleSuggestionsChange = (newSuggestions) => {
+    setSuggestions(newSuggestions);
+    if (newSuggestions.length > 0 && !showSuggestions) {
+      setShowSuggestions(true);
+    }
+  };
+
+
+  const handleAcceptSuggestion = (suggestionId) => {
+    const suggestion = suggestions.find(s => s.id === suggestionId);
+    if (!suggestion) return;
     
-    // If commentData is from inline comment (has text, selectedText, range)
-    if (commentData.text && commentData.selectedText && commentData.range) {
-      try {
-        const response = await commentService.addComment(
-          id,
-          commentData.text,
-          commentData.selectedText,
-          commentData.range,
-          null,
-          commentData.type || 'comment',
-          commentData.suggestedText || null
-        );
-        
-        if (response.comment) {
-          setComments(prev => {
-            const updated = [response.comment, ...prev];
-            console.log('Updated comments state:', updated);
-            return updated;
-          });
-          
-          // Emit socket event for real-time sync
-          if (socket && socket.connected) {
-            socket.emit('suggestion-added', {
-              documentId: id,
-              suggestion: response.comment
-            });
-          }
-        }
-      } catch (error) {
-        console.error('Error adding comment:', error);
-      }
-    } else {
-      // Handle regular comment object
-      setComments(prev => {
-        const updated = [commentData, ...prev];
-        console.log('Updated comments state:', updated);
-        return updated;
+    // Apply the suggestion to the content
+    const newContent = content.replace(suggestion.originalText, suggestion.suggestionText);
+    setContent(newContent);
+    
+    // Update suggestion status
+    setSuggestions(prev => 
+      prev.map(s => s.id === suggestionId ? { ...s, status: 'approved' } : s)
+    );
+    
+    // Remove approved suggestion after 3 seconds
+    setTimeout(() => {
+      setSuggestions(prev => prev.filter(s => s.id !== suggestionId));
+    }, 3000);
+    
+    // Emit socket event (like comments)
+    if (socket && id) {
+      const updatedSuggestion = { ...suggestion, status: 'approved' };
+      socket.emit('suggestion-updated', {
+        suggestion: updatedSuggestion
       });
     }
   };
 
-  const handleCommentDelete = async (commentId) => {
-    try {
-      await commentService.deleteComment(commentId);
-      setComments(prev => prev.filter(comment => comment.id !== commentId));
-    } catch (err) {
-      console.error('Error deleting comment:', err);
-    }
-  };
-
-  // Handle text selection for suggestions
-  const handleTextSelect = (selectedText, range, type = 'suggestion', selectionType = 'text', suggestionText = '') => {
-    setSelectedTextForComment(selectedText);
-    setSelectedRange(range);
-    setCommentType(type);
-    setSelectionType(selectionType);
+  const handleRejectSuggestion = (suggestionId) => {
+    // Update suggestion status
+    setSuggestions(prev => 
+      prev.map(s => s.id === suggestionId ? { ...s, status: 'rejected' } : s)
+    );
     
-    // If suggestionText is provided (from # suggestion), create suggestion immediately
-    if (suggestionText && suggestionText.trim()) {
-      handleCommentAdd({
-        text: suggestionText,
-        selectedText,
-        range,
-        type,
-        selectionType
+    // Remove rejected suggestion after 2 seconds
+    setTimeout(() => {
+      setSuggestions(prev => prev.filter(s => s.id !== suggestionId));
+    }, 2000);
+    
+    // Emit socket event (like comments)
+    if (socket && id) {
+      const suggestion = suggestions.find(s => s.id === suggestionId);
+      const updatedSuggestion = { ...suggestion, status: 'rejected' };
+      socket.emit('suggestion-updated', {
+        suggestion: updatedSuggestion
       });
     }
   };
 
-  // Handle comment actions
-  const handleCommentResolve = (commentId) => {
-    setComments(prev => 
-      prev.map(comment => 
-        comment.id === commentId 
-          ? { ...comment, isResolved: true, resolvedBy: user.userId, resolvedAt: new Date().toISOString() }
-          : comment
-      )
-    );
-  };
-
-  const handleSuggestionResolve = (suggestionId, action) => {
-    setComments(prev => 
-      prev.map(comment => 
-        comment.id === suggestionId 
-          ? { 
-              ...comment, 
-              status: action, 
-              isResolved: true, 
-              resolvedBy: user.userId, 
-              resolvedAt: new Date().toISOString() 
-            }
-          : comment
-      )
-    );
-  };
-
-  const handleReplyAdd = (reply) => {
-    setComments(prev => [...prev, reply]);
-  };
 
   useEffect(() => {
     const saveTimer = setTimeout(() => {
@@ -515,56 +506,6 @@ const EditorPage = () => {
     return () => clearTimeout(saveTimer);
   }, [title, content, document]);
 
-  // Socket event handlers for comments
-  useEffect(() => {
-    if (socket) {
-      socket.on('comment-added', (data) => {
-        setComments(prev => [...prev, data.comment]);
-      });
-
-      socket.on('suggestion-added', (data) => {
-        setComments(prev => [...prev, data.suggestion]);
-      });
-
-      socket.on('comment-resolved', (data) => {
-        setComments(prev => 
-          prev.map(comment => 
-            comment.id === data.commentId 
-              ? { ...comment, isResolved: true, resolvedBy: data.resolvedBy, resolvedAt: data.timestamp }
-              : comment
-          )
-        );
-      });
-
-      socket.on('suggestion-resolved', (data) => {
-        setComments(prev => 
-          prev.map(comment => 
-            comment.id === data.suggestionId 
-              ? { 
-                  ...comment, 
-                  status: data.action, 
-                  isResolved: true, 
-                  resolvedBy: data.resolvedBy, 
-                  resolvedAt: data.timestamp 
-                }
-              : comment
-          )
-        );
-      });
-
-      socket.on('reply-added', (data) => {
-        setComments(prev => [...prev, data.reply]);
-      });
-
-      return () => {
-        socket.off('comment-added');
-        socket.off('suggestion-added');
-        socket.off('comment-resolved');
-        socket.off('suggestion-resolved');
-        socket.off('reply-added');
-      };
-    }
-  }, [socket]);
 
   if (loading) {
     return (
@@ -653,38 +594,44 @@ const EditorPage = () => {
                   📊
                 </button>
                 <button
-                  onClick={toggleCommentSidebar}
+                  onClick={() => setShowComments(!showComments)}
                   className="editor-nav-comments"
-                  title="Toggle suggestions"
+                  title="Toggle comments"
                   style={{ 
-                    backgroundColor: showCommentSidebar ? '#8B5CF6' : 'transparent', 
-                    color: showCommentSidebar ? '#ffffff' : '#37352f', 
-                    padding: '6px 12px', 
-                    borderRadius: '6px',
+                    backgroundColor: showComments ? '#f3f2f1' : 'transparent', 
+                    color: '#37352f', 
+                    padding: '6px 12px',
                     fontSize: '14px',
-                    fontWeight: '500',
-                    border: '1px solid #e9e9e7',
+                    border: 'none',
                     cursor: 'pointer',
-                    position: 'relative'
+                    borderRadius: '4px'
                   }}
                 >
-                  💡 Suggestions
-                  {comments.length > 0 && (
-                    <span style={{
-                      position: 'absolute',
-                      top: '-5px',
-                      right: '-5px',
-                      backgroundColor: '#ef4444',
-                      color: 'white',
-                      borderRadius: '50%',
-                      width: '18px',
-                      height: '18px',
-                      fontSize: '10px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}>
-                      {comments.length}
+                  💬
+                </button>
+                <button
+                  onClick={() => {
+                    console.log('Suggestions button clicked');
+                    console.log('Current suggestions:', suggestions);
+                    console.log('User is owner:', user?.userId === document?.createdBy);
+                    setShowSuggestions(!showSuggestions);
+                  }}
+                  className="editor-nav-suggestions"
+                  title="Toggle suggestions"
+                  style={{ 
+                    backgroundColor: showSuggestions ? '#f3f2f1' : 'transparent', 
+                    color: '#37352f', 
+                    padding: '6px 12px',
+                    fontSize: '14px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    borderRadius: '4px'
+                  }}
+                >
+                  💡 Suggestions ({suggestions.length})
+                  {suggestions.filter(s => s.status === 'pending').length > 0 && (
+                    <span className="ml-1 bg-red-500 text-white text-xs px-1 py-0.5 rounded-full">
+                      {suggestions.filter(s => s.status === 'pending').length}
                     </span>
                   )}
                 </button>
@@ -794,34 +741,21 @@ const EditorPage = () => {
               onUpdate={handleContentChange}
               onCursorMove={handleCursorMove.current}
               onMouseMove={handleMouseMove.current}
-              onTextSelect={handleTextSelect}
               editable={true}
               activeUsers={activeUsers}
               currentUserId={user?.userId}
-              comments={comments}
+              documentOwnerId={document?.createdBy}
+              onSuggestionsChange={handleSuggestionsChange}
+              suggestions={suggestions}
+              onAcceptSuggestion={handleAcceptSuggestion}
+              onRejectSuggestion={handleRejectSuggestion}
+              socket={socket}
+              documentId={id}
             />
           </div>
         </div>
       </div>
 
-      {/* Comment Panel */}
-      {showCommentSidebar && (
-        <div className="fixed right-0 top-0 h-full z-40">
-          <CommentPanel
-            documentId={id}
-            comments={comments}
-            onCommentAdd={handleCommentAdd}
-            onCommentResolve={handleCommentResolve}
-            onSuggestionResolve={handleSuggestionResolve}
-            onReplyAdd={handleReplyAdd}
-            currentUser={user}
-            selectedText={selectedTextForComment}
-            selectedRange={selectedRange}
-            commentType={commentType}
-            selectionType={selectionType}
-          />
-        </div>
-      )}
 
       {/* Share Modal */}
       <ShareModal
@@ -831,6 +765,28 @@ const EditorPage = () => {
         documentTitle={title}
         currentUser={user}
       />
+
+      {/* Comment Sidebar */}
+      <CommentSidebar
+        documentId={id}
+        isVisible={showComments}
+        onClose={() => setShowComments(false)}
+        socket={socket}
+      />
+
+      {/* Suggestion Sidebar */}
+      <SuggestionSidebar
+        suggestions={suggestions}
+        currentUserId={user?.userId}
+        documentOwnerId={document?.createdBy}
+        onAcceptSuggestion={handleAcceptSuggestion}
+        onRejectSuggestion={handleRejectSuggestion}
+        isVisible={showSuggestions}
+        onClose={() => setShowSuggestions(false)}
+        socket={socket}
+        documentId={id}
+      />
+
     </div>
   );
 };

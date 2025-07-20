@@ -3,7 +3,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { documentService } from '../services/api';
 import { useNavigate } from 'react-router-dom';
-import AllCommentsSidebar from '../components/AllCommentsSidebar';
 import '../styles/Dashboard.css';
 
 const Dashboard = () => {
@@ -21,7 +20,6 @@ const Dashboard = () => {
   const [sortBy, setSortBy] = useState('updatedAt'); // 'updatedAt', 'title', 'createdAt'
   const [filterBy, setFilterBy] = useState('all'); // 'all', 'public', 'private', 'my-docs'
   const [isVisible, setIsVisible] = useState(false);
-  const [showAllComments, setShowAllComments] = useState(false);
   const { user, logout } = useAuth();
   const { toggleTheme, effectiveTheme } = useTheme();
   const navigate = useNavigate();
@@ -138,11 +136,19 @@ const Dashboard = () => {
     if (!newDocTitle.trim()) return;
 
     try {
-      await documentService.createDocument(newDocTitle, '', newDocIsPublic);
+      const response = await documentService.createDocument(newDocTitle, '', newDocIsPublic);
       setNewDocTitle('');
       setNewDocIsPublic(false);
       setShowCreateModal(false);
-      fetchDocuments(); // This will also update publicDocuments
+      
+      // Navigate to the new document editor
+      if (response.document && response.document.id) {
+        navigate(`/editor/${response.document.id}`);
+      } else {
+        // Fallback: refresh documents and show success message
+        fetchDocuments();
+        console.log('Document created successfully');
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to create document');
     }
@@ -208,13 +214,22 @@ const Dashboard = () => {
   };
 
   const handleDeleteDocument = async (id) => {
-    if (!confirm('Are you sure you want to delete this document?')) return;
+    // Create a custom confirmation modal
+    const userConfirmed = window.confirm('Are you sure you want to delete this document? This action cannot be undone.');
+    if (!userConfirmed) return;
 
     try {
+      setLoading(true);
       await documentService.deleteDocument(id);
-      fetchDocuments(); // This will also update publicDocuments
+      await fetchDocuments(); // This will also update publicDocuments
+      // Show success message briefly
+      const originalError = error;
+      setError('Document deleted successfully');
+      setTimeout(() => setError(originalError || ''), 3000);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to delete document');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -235,27 +250,10 @@ const Dashboard = () => {
         <div className="dashboard-nav-content">
           <div className="dashboard-nav-inner">
             <div className="dashboard-nav-left">
-              <h1 className="dashboard-nav-title">Notion Clone</h1>
+              <h1 className="dashboard-nav-title">Collaboration Tool</h1>
             </div>
             <div className="dashboard-nav-actions">
               <span className="dashboard-nav-welcome">{getGreeting()}, {user?.name}</span>
-              <button 
-                onClick={() => setShowAllComments(true)}
-                className="dashboard-nav-comments"
-                title="View all comments"
-                style={{
-                  backgroundColor: 'transparent',
-                  border: '1px solid #e9e9e7',
-                  color: '#37352f',
-                  padding: '6px 12px',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  cursor: 'pointer',
-                  marginRight: '8px'
-                }}
-              >
-                💬 Comments
-              </button>
               <button 
                 onClick={toggleTheme} 
                 className="dashboard-nav-theme"
@@ -309,48 +307,50 @@ const Dashboard = () => {
 
           {/* Search and Controls */}
           <div className="dashboard-controls">
-            <div className="dashboard-search">
-              <input
-                type="text"
-                placeholder="Search documents..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="dashboard-search-input"
-              />
-            </div>
-            <div className="dashboard-filters">
-              <select
-                value={filterBy}
-                onChange={(e) => setFilterBy(e.target.value)}
-                className="dashboard-filter-select"
-              >
-                <option value="all">All Documents</option>
-                <option value="my-docs">My Documents</option>
-                <option value="public">All Public Documents</option>
-                <option value="private">My Private Documents</option>
-              </select>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="dashboard-filter-select"
-              >
-                <option value="updatedAt">Last Updated</option>
-                <option value="title">Title</option>
-                <option value="createdAt">Created</option>
-              </select>
-              <div className="dashboard-view-toggle">
-                <button
-                  onClick={() => setViewMode('grid')}
-                  className={`dashboard-view-btn ${viewMode === 'grid' ? 'active' : ''}`}
+            <div className="dashboard-controls-row">
+              <div className="dashboard-search">
+                <input
+                  type="text"
+                  placeholder="Search..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="dashboard-search-input"
+                />
+              </div>
+              <div className="dashboard-filters">
+                <select
+                  value={filterBy}
+                  onChange={(e) => setFilterBy(e.target.value)}
+                  className="dashboard-filter-select"
                 >
-                  Grid
-                </button>
-                <button
-                  onClick={() => setViewMode('list')}
-                  className={`dashboard-view-btn ${viewMode === 'list' ? 'active' : ''}`}
+                  <option value="all">All Documents</option>
+                  <option value="my-docs">My Documents</option>
+                  <option value="public">All Public Documents</option>
+                  <option value="private">My Private Documents</option>
+                </select>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="dashboard-filter-select"
                 >
-                  List
-                </button>
+                  <option value="updatedAt">Last Updated</option>
+                  <option value="title">Title</option>
+                  <option value="createdAt">Created</option>
+                </select>
+                <div className="dashboard-view-toggle">
+                  <button
+                    onClick={() => setViewMode('grid')}
+                    className={`dashboard-view-btn ${viewMode === 'grid' ? 'active' : ''}`}
+                  >
+                    Grid
+                  </button>
+                  <button
+                    onClick={() => setViewMode('list')}
+                    className={`dashboard-view-btn ${viewMode === 'list' ? 'active' : ''}`}
+                  >
+                    List
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -517,11 +517,6 @@ const Dashboard = () => {
         </div>
       )}
       
-      {/* All Comments Sidebar */}
-      <AllCommentsSidebar 
-        isOpen={showAllComments}
-        onClose={() => setShowAllComments(false)}
-      />
     </div>
   );
 };

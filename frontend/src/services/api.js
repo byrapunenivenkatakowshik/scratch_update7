@@ -21,9 +21,21 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    console.error('API Error:', {
+      url: error.config?.url,
+      method: error.config?.method,
+      status: error.response?.status,
+      message: error.response?.data?.error || error.message,
+      details: error.response?.data?.details
+    });
+    
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
-      window.location.href = '/login';
+      // Only redirect if not already on login/register pages
+      if (!window.location.pathname.includes('/login') && 
+          !window.location.pathname.includes('/register')) {
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }
@@ -109,21 +121,13 @@ export const commentService = {
     return response.data;
   },
 
-  addComment: async (documentId, text, selectedText, range, position, type, suggestedText) => {
-    const response = await api.post('/comments', {
-      documentId,
-      text,
-      selectedText,
-      range,
-      position,
-      type,
-      suggestedText
-    });
+  addComment: async (documentId, content) => {
+    const response = await api.post(`/comments/document/${documentId}`, { content });
     return response.data;
   },
 
-  updateComment: async (commentId, text) => {
-    const response = await api.put(`/comments/${commentId}`, { text });
+  updateComment: async (commentId, content) => {
+    const response = await api.put(`/comments/${commentId}`, { content });
     return response.data;
   },
 
@@ -132,20 +136,11 @@ export const commentService = {
     return response.data;
   },
 
-  resolveComment: async (commentId, action) => {
-    const response = await api.put(`/comments/${commentId}/resolve`, { action });
+  resolveComment: async (commentId, isResolved) => {
+    const response = await api.put(`/comments/${commentId}/resolve`, { isResolved });
     return response.data;
   },
-
-  addReply: async (commentId, text) => {
-    const response = await api.post(`/comments/${commentId}/reply`, { text });
-    return response.data;
-  },
-
-  getUserComments: async (userId) => {
-    const response = await api.get(`/comments/user/${userId}`);
-    return response.data;
-  }
 };
+
 
 export default api;

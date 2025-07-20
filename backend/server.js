@@ -9,13 +9,18 @@ require('dotenv').config();
 const authRoutes = require('./routes/auth');
 const documentRoutes = require('./routes/documents');
 const commentRoutes = require('./routes/comments');
-const { db } = require('./config/firebase');
+const { db, checkDatabaseHealth } = require('./config/firebase');
 
 const app = express();
 const server = createServer(app);
+
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? process.env.ALLOWED_ORIGINS?.split(',') || []
+  : ["http://localhost:5173", "http://localhost:5174"];
+
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -24,19 +29,40 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 5000;
 
 app.use(helmet());
-app.use(cors());
-app.use(morgan('combined'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Store active users and document sessions
 const activeUsers = new Map();
 const documentSessions = new Map();
 const webrtcSessions = new Map();
 
+// Socket.IO authentication middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  
+  if (!token) {
+    return next(new Error('Authentication error'));
+  }
+  
+  try {
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.userId = decoded.userId;
+    socket.userName = decoded.name;
+    next();
+  } catch (err) {
+    next(new Error('Authentication error'));
+  }
+});
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
 
   socket.on('join-document', async (data) => {
     const { documentId, userId, userName } = data;
@@ -149,7 +175,6 @@ io.on('connection', (socket) => {
     const user = activeUsers.get(socket.id);
     
     if (user && user.documentId === documentId) {
-      // Update user's mouse position in activeUsers
       const updatedUser = { ...user, mousePosition: position };
       activeUsers.set(socket.id, updatedUser);
       
@@ -178,7 +203,6 @@ io.on('connection', (socket) => {
     // Notify other users in the WebRTC room
     socket.to(`webrtc-${documentId}`).emit('user-joined-webrtc', { userId });
     
-    console.log(`User ${userId} joined WebRTC room for document ${documentId}`);
   });
 
   socket.on('leave-webrtc-room', (data) => {
@@ -199,7 +223,6 @@ io.on('connection', (socket) => {
     // Notify other users
     socket.to(`webrtc-${documentId}`).emit('user-left-webrtc', { userId });
     
-    console.log(`User ${userId} left WebRTC room for document ${documentId}`);
   });
 
   socket.on('webrtc-offer', (data) => {
@@ -211,7 +234,6 @@ io.on('connection', (socket) => {
       fromPeer: userId
     });
     
-    console.log(`WebRTC offer from ${userId} to ${targetPeer} for document ${documentId}`);
   });
 
   socket.on('webrtc-answer', (data) => {
@@ -223,7 +245,6 @@ io.on('connection', (socket) => {
       fromPeer: userId
     });
     
-    console.log(`WebRTC answer from ${userId} to ${targetPeer} for document ${documentId}`);
   });
 
   socket.on('webrtc-ice-candidate', (data) => {
@@ -235,7 +256,6 @@ io.on('connection', (socket) => {
       fromPeer: userId
     });
     
-    console.log(`ICE candidate from ${userId} to ${targetPeer} for document ${documentId}`);
   });
 
   // Comment and suggestion events
@@ -244,9 +264,36 @@ io.on('connection', (socket) => {
     const user = activeUsers.get(socket.id);
     
     if (user && user.documentId === documentId) {
-      // Broadcast to all users in the document
-      io.to(documentId).emit('comment-added', {
+      // Broadcast to all other users in the document (excluding sender)
+      socket.to(documentId).emit('comment-added', {
         comment,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  socket.on('comment-updated', (data) => {
+    const { documentId, comment } = data;
+    const user = activeUsers.get(socket.id);
+    
+    if (user && user.documentId === documentId) {
+      // Broadcast to all other users in the document (excluding sender)
+      socket.to(documentId).emit('comment-updated', {
+        comment,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  socket.on('comment-deleted', (data) => {
+    const { documentId, commentId } = data;
+    const user = activeUsers.get(socket.id);
+    
+    if (user && user.documentId === documentId) {
+      // Broadcast to all other users in the document (excluding sender)
+      socket.to(documentId).emit('comment-deleted', {
+        documentId,
+        commentId,
         timestamp: new Date().toISOString()
       });
     }
@@ -282,14 +329,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('comment-resolved', (data) => {
-    const { documentId, commentId } = data;
+    const { documentId, commentId, isResolved, resolvedBy } = data;
     const user = activeUsers.get(socket.id);
     
     if (user && user.documentId === documentId) {
-      // Broadcast to all users in the document
-      io.to(documentId).emit('comment-resolved', {
+      // Broadcast to all other users in the document (excluding sender)
+      socket.to(documentId).emit('comment-resolved', {
+        documentId,
         commentId,
-        resolvedBy: user.userId,
+        isResolved,
+        resolvedBy,
         resolvedByName: user.userName,
         timestamp: new Date().toISOString()
       });
@@ -353,7 +402,6 @@ io.on('connection', (socket) => {
       }
     }
     
-    console.log('User disconnected:', socket.id);
   });
 });
 
@@ -401,20 +449,60 @@ const saveDocumentTitle = (documentId, title) => {
 };
 
 app.get('/', (req, res) => {
-  res.json({ message: 'Notion Clone API Server' });
+  res.json({ message: 'Collaboration Tool API Server' });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  try {
+    const dbHealth = await checkDatabaseHealth();
+    res.json({ 
+      status: 'OK', 
+      database: dbHealth,
+      server: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        version: process.version
+      },
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ERROR', 
+      error: error.message,
+      timestamp: new Date().toISOString() 
+    });
+  }
 });
 
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/comments', commentRoutes);
 
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  console.error('🚨 Global error handler:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+  
+  res.status(err.status || 500).json({ 
+    error: 'Internal server error',
+    message: err.message,
+    timestamp: new Date().toISOString(),
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Route not found',
+    message: `The route ${req.method} ${req.originalUrl} was not found`,
+    timestamp: new Date().toISOString()
+  });
 });
 
 server.listen(PORT, () => {

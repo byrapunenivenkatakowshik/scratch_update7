@@ -66,7 +66,6 @@ export const useWebRTC = (documentId, userId, onCursorUpdate) => {
         };
       };
 
-      setIsConnected(true);
     } catch (error) {
       console.error('Failed to initialize WebRTC:', error);
       setConnectionState('failed');
@@ -95,7 +94,7 @@ export const useWebRTC = (documentId, userId, onCursorUpdate) => {
       default:
         console.log('Unknown WebRTC message:', data);
     }
-  }, []);
+  }, [onCursorUpdate]);
 
   // Send data through WebRTC
   const sendWebRTCData = useCallback((data) => {

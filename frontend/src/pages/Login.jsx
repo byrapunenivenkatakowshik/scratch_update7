@@ -48,7 +48,7 @@ const Login = () => {
             <div className="login-logo-icon">
               <span className="text-white font-bold">N</span>
             </div>
-            <h1 className="login-logo-text">Notion Clone</h1>
+            <h1 className="login-logo-text">Collaboration Tool</h1>
           </Link>
           <div className="login-nav-links">
             <Link to="/" className="login-nav-link">Home</Link>

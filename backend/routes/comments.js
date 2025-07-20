@@ -4,7 +4,45 @@ const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
-// All routes require authentication
+// Input validation middleware
+const validateComment = (req, res, next) => {
+  const { content } = req.body;
+  
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ error: 'Content is required and must be a string' });
+  }
+  
+  if (content.length < 1 || content.length > 1000) {
+    return res.status(400).json({ error: 'Content must be between 1 and 1000 characters' });
+  }
+  
+  // Sanitize content (basic HTML escape)
+  req.body.content = content.trim();
+  
+  next();
+};
+
+// Enhanced error handling
+const handleDatabaseError = (error, res) => {
+  console.error('Database error:', error);
+  console.error('Error message:', error.message);
+  console.error('Error code:', error.code);
+  
+  if (error.code === 'PERMISSION_DENIED') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  
+  if (error.code === 'NOT_FOUND') {
+    return res.status(404).json({ error: 'Resource not found' });
+  }
+  
+  if (error.code === 'INVALID_ARGUMENT') {
+    return res.status(400).json({ error: 'Invalid request data' });
+  }
+  
+  res.status(500).json({ error: 'Internal server error' });
+};
+
 router.use(authenticateToken);
 
 // Get all comments for a document
@@ -13,7 +51,7 @@ router.get('/document/:documentId', async (req, res) => {
     const { documentId } = req.params;
     const userId = req.user.userId;
 
-    // First verify user has access to the document
+    // First, verify user has access to the document
     const docRef = db.collection('documents').doc(documentId);
     const doc = await docRef.get();
 
@@ -22,50 +60,84 @@ router.get('/document/:documentId', async (req, res) => {
     }
 
     const documentData = doc.data();
-    const hasAccess = documentData.collaborators.includes(userId) || documentData.isPublic;
-    
+
+    // Check access: user must be collaborator OR document is public
+    const hasAccess = documentData.collaborators?.includes(userId) || documentData.isPublic;
     if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: 'Access denied to document' });
     }
 
     // Get comments for the document
-    const commentsSnapshot = await db.collection('comments')
-      .where('documentId', '==', documentId)
-      .get();
+    let commentsSnapshot;
+    try {
+      commentsSnapshot = await db.collection('comments')
+        .where('documentId', '==', documentId)
+        .orderBy('createdAt', 'desc')
+        .get();
+    } catch (orderByError) {
+      // Fallback: get comments without orderBy if index doesn't exist
+      console.log('OrderBy failed, falling back to simple query:', orderByError.message);
+      commentsSnapshot = await db.collection('comments')
+        .where('documentId', '==', documentId)
+        .get();
+    }
 
     const comments = [];
-    commentsSnapshot.forEach(doc => {
-      comments.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
+    if (commentsSnapshot && commentsSnapshot.docs && commentsSnapshot.docs.length > 0) {
+      for (const commentDoc of commentsSnapshot.docs) {
+        const commentData = commentDoc.data();
+        
+        // Get user details for each comment
+        let userData = null;
+        try {
+          const userQuery = await db.collection('users').where('userId', '==', commentData.createdBy).limit(1).get();
+          if (!userQuery.empty) {
+            userData = userQuery.docs[0].data();
+          }
+        } catch (userError) {
+          console.log('Error fetching user data for comment:', userError.message);
+          // Continue without user data
+        }
+
+        comments.push({
+          id: commentDoc.id,
+          ...commentData,
+          createdAt: commentData.createdAt?.toDate ? commentData.createdAt.toDate().toISOString() : commentData.createdAt,
+          updatedAt: commentData.updatedAt?.toDate ? commentData.updatedAt.toDate().toISOString() : commentData.updatedAt,
+          user: userData ? {
+            userId: userData.userId,
+            name: userData.name,
+            email: userData.email
+          } : {
+            userId: commentData.createdBy,
+            name: 'Unknown User',
+            email: commentData.createdBy
+          }
+        });
+      }
+      
+      // Sort comments manually if we couldn't use orderBy
+      if (!commentsSnapshot.docs[0]._orderBy) {
+        comments.sort((a, b) => {
+          const aTime = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+          const bTime = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+          return bTime - aTime; // desc order
+        });
+      }
+    }
 
     res.json({ comments });
   } catch (error) {
-    console.error('Get comments error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleDatabaseError(error, res);
   }
 });
 
-// Add a new comment or suggestion
-router.post('/', async (req, res) => {
+// Add a new comment to a document
+router.post('/document/:documentId', validateComment, async (req, res) => {
   try {
-    const { documentId, text, selectedText, range, position, type, suggestedText } = req.body;
+    const { documentId } = req.params;
+    const { content } = req.body;
     const userId = req.user.userId;
-    const userName = req.user.name;
-
-    if (!documentId || !text) {
-      return res.status(400).json({ error: 'Document ID and text are required' });
-    }
-
-    if (type === 'comment' && !selectedText) {
-      return res.status(400).json({ error: 'Selected text is required for comments' });
-    }
-
-    if (type === 'suggestion' && (!selectedText || !suggestedText)) {
-      return res.status(400).json({ error: 'Selected text and suggested text are required for suggestions' });
-    }
 
     // Verify user has access to the document
     const docRef = db.collection('documents').doc(documentId);
@@ -76,62 +148,61 @@ router.post('/', async (req, res) => {
     }
 
     const documentData = doc.data();
-    const hasAccess = documentData.collaborators.includes(userId) || documentData.isPublic;
-    
+
+    // Check access: user must be collaborator OR document is public
+    const hasAccess = documentData.collaborators?.includes(userId) || documentData.isPublic;
     if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: 'Access denied to document' });
     }
 
-    // Create comment or suggestion
+    // Create the comment
     const commentData = {
       documentId,
-      text: text.trim(),
-      selectedText: selectedText || null,
-      range: range || null,
-      position: position || null,
-      type: type || 'comment',
-      suggestedText: suggestedText || null,
-      author: userName,
-      authorId: userId,
-      timestamp: new Date(),
+      content,
+      createdBy: userId,
       createdAt: new Date(),
       updatedAt: new Date(),
-      status: type === 'suggestion' ? 'pending' : 'active',
       isResolved: false
     };
 
     const commentRef = await db.collection('comments').add(commentData);
 
-    // Update document's last activity
-    await docRef.update({
-      lastActivity: new Date(),
-      updatedAt: new Date()
-    });
+    // Get user details for the response
+    const userQuery = await db.collection('users').where('userId', '==', userId).limit(1).get();
+    let userData = null;
+    if (!userQuery.empty) {
+      userData = userQuery.docs[0].data();
+    }
+
+    const responseComment = {
+      id: commentRef.id,
+      ...commentData,
+      createdAt: commentData.createdAt.toISOString(),
+      updatedAt: commentData.updatedAt.toISOString(),
+      user: userData ? {
+        userId: userData.userId,
+        name: userData.name,
+        email: userData.email
+      } : null
+    };
 
     res.status(201).json({
-      message: `${type === 'suggestion' ? 'Suggestion' : 'Comment'} added successfully`,
-      comment: {
-        id: commentRef.id,
-        ...commentData
-      }
+      message: 'Comment created successfully',
+      comment: responseComment
     });
   } catch (error) {
-    console.error('Add comment/suggestion error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleDatabaseError(error, res);
   }
 });
 
 // Update a comment
-router.put('/:commentId', async (req, res) => {
+router.put('/:commentId', validateComment, async (req, res) => {
   try {
     const { commentId } = req.params;
-    const { text } = req.body;
+    const { content } = req.body;
     const userId = req.user.userId;
 
-    if (!text) {
-      return res.status(400).json({ error: 'Text is required' });
-    }
-
+    // Get the comment
     const commentRef = db.collection('comments').doc(commentId);
     const comment = await commentRef.get();
 
@@ -141,21 +212,20 @@ router.put('/:commentId', async (req, res) => {
 
     const commentData = comment.data();
 
-    // Only the author can update their comment
-    if (commentData.authorId !== userId) {
-      return res.status(403).json({ error: 'You can only edit your own comments' });
+    // Only the comment creator can update it
+    if (commentData.createdBy !== userId) {
+      return res.status(403).json({ error: 'Only the comment creator can update this comment' });
     }
 
-    // Update comment
+    // Update the comment
     await commentRef.update({
-      text: text.trim(),
+      content,
       updatedAt: new Date()
     });
 
     res.json({ message: 'Comment updated successfully' });
   } catch (error) {
-    console.error('Update comment error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleDatabaseError(error, res);
   }
 });
 
@@ -165,6 +235,7 @@ router.delete('/:commentId', async (req, res) => {
     const { commentId } = req.params;
     const userId = req.user.userId;
 
+    // Get the comment
     const commentRef = db.collection('comments').doc(commentId);
     const comment = await commentRef.get();
 
@@ -174,60 +245,39 @@ router.delete('/:commentId', async (req, res) => {
 
     const commentData = comment.data();
 
-    // Only the author can delete their comment
-    if (commentData.authorId !== userId) {
-      return res.status(403).json({ error: 'You can only delete your own comments' });
+    // Check if user can delete: must be comment creator OR document owner
+    if (commentData.createdBy !== userId) {
+      // Check if user is document owner
+      const docRef = db.collection('documents').doc(commentData.documentId);
+      const doc = await docRef.get();
+      
+      if (!doc.exists) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+
+      const documentData = doc.data();
+      if (documentData.createdBy !== userId) {
+        return res.status(403).json({ error: 'Only the comment creator or document owner can delete this comment' });
+      }
     }
 
-    // Delete comment
+    // Delete the comment
     await commentRef.delete();
 
     res.json({ message: 'Comment deleted successfully' });
   } catch (error) {
-    console.error('Delete comment error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleDatabaseError(error, res);
   }
 });
 
-// Get comments by user
-router.get('/user/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const requestingUserId = req.user.userId;
-
-    // Users can only see their own comments or public comments
-    if (userId !== requestingUserId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    const commentsSnapshot = await db.collection('comments')
-      .where('authorId', '==', userId)
-      .orderBy('timestamp', 'desc')
-      .limit(50)
-      .get();
-
-    const comments = [];
-    commentsSnapshot.forEach(doc => {
-      comments.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
-
-    res.json({ comments });
-  } catch (error) {
-    console.error('Get user comments error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Accept or reject a suggestion OR resolve a comment
+// Resolve/unresolve a comment
 router.put('/:commentId/resolve', async (req, res) => {
   try {
     const { commentId } = req.params;
-    const { action } = req.body; // 'accept' or 'reject' for suggestions, undefined for comments
+    const { isResolved } = req.body;
     const userId = req.user.userId;
 
+    // Get the comment
     const commentRef = db.collection('comments').doc(commentId);
     const comment = await commentRef.get();
 
@@ -237,7 +287,7 @@ router.put('/:commentId/resolve', async (req, res) => {
 
     const commentData = comment.data();
 
-    // Verify user has access to the document
+    // Check if user has access to the document
     const docRef = db.collection('documents').doc(commentData.documentId);
     const doc = await docRef.get();
 
@@ -246,109 +296,24 @@ router.put('/:commentId/resolve', async (req, res) => {
     }
 
     const documentData = doc.data();
-    const canResolve = documentData.collaborators.includes(userId) || documentData.isPublic;
-    
-    if (!canResolve) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
 
-    if (commentData.type === 'suggestion') {
-      // Handle suggestion resolution
-      if (!action || !['accept', 'reject'].includes(action)) {
-        return res.status(400).json({ error: 'Action must be accept or reject for suggestions' });
-      }
-
-      await commentRef.update({
-        status: action === 'accept' ? 'accepted' : 'rejected',
-        isResolved: true,
-        resolvedBy: userId,
-        resolvedAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      res.json({
-        message: `Suggestion ${action}ed successfully`,
-        action,
-        suggestionId: commentId
-      });
-    } else {
-      // Handle comment resolution
-      await commentRef.update({
-        isResolved: true,
-        resolvedBy: userId,
-        resolvedAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      res.json({ message: 'Comment resolved successfully' });
-    }
-  } catch (error) {
-    console.error('Resolve comment/suggestion error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Add reply to comment
-router.post('/:commentId/reply', async (req, res) => {
-  try {
-    const { commentId } = req.params;
-    const { text } = req.body;
-    const userId = req.user.userId;
-    const userName = req.user.name;
-
-    if (!text) {
-      return res.status(400).json({ error: 'Reply text is required' });
-    }
-
-    const parentCommentRef = db.collection('comments').doc(commentId);
-    const parentComment = await parentCommentRef.get();
-
-    if (!parentComment.exists) {
-      return res.status(404).json({ error: 'Parent comment not found' });
-    }
-
-    const parentCommentData = parentComment.data();
-
-    // Verify user has access to the document
-    const docRef = db.collection('documents').doc(parentCommentData.documentId);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'Document not found' });
-    }
-
-    const documentData = doc.data();
-    const hasAccess = documentData.collaborators.includes(userId) || documentData.isPublic;
-    
+    // Check access: user must be collaborator OR document is public
+    const hasAccess = documentData.collaborators?.includes(userId) || documentData.isPublic;
     if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: 'Access denied to document' });
     }
 
-    // Create reply
-    const replyData = {
-      documentId: parentCommentData.documentId,
-      text: text.trim(),
-      type: 'reply',
-      parentCommentId: commentId,
-      author: userName,
-      authorId: userId,
-      timestamp: new Date(),
-      createdAt: new Date(),
+    // Update the comment resolution status
+    await commentRef.update({
+      isResolved: Boolean(isResolved),
+      resolvedAt: isResolved ? new Date() : null,
+      resolvedBy: isResolved ? userId : null,
       updatedAt: new Date()
-    };
-
-    const replyRef = await db.collection('comments').add(replyData);
-
-    res.status(201).json({
-      message: 'Reply added successfully',
-      reply: {
-        id: replyRef.id,
-        ...replyData
-      }
     });
+
+    res.json({ message: `Comment ${isResolved ? 'resolved' : 'unresolved'} successfully` });
   } catch (error) {
-    console.error('Add reply error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    handleDatabaseError(error, res);
   }
 });
 
